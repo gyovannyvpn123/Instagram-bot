@@ -24,7 +24,9 @@ def login(session, username, password):
     timestamp = int(time.time())
     enc_password = f"#PWD_INSTAGRAM:0:{timestamp}:{password}"
     session.headers.update({
-        "User-Agent": "Instagram 273.0.0.16.97 Android (30/11; 420dpi; 1080x1920; ...)"
+        "User-Agent": "Instagram 273.0.0.16.97 Android (30/11; 420dpi; 1080x1920; ...)",
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "Accept-Language": "en-US",
     })
     session.get("https://www.instagram.com/accounts/login/")
     data = {
@@ -65,23 +67,22 @@ def list_groups(session):
         groups.append({'id': t['thread_id'], 'name': name})
     return groups
 
-def send_message(session, target_id, text):
-    url = 'https://i.instagram.com/api/v1/direct_v2/threads/broadcast/text/'
+def send_message(session, thread_id, text):
+    url = f"https://i.instagram.com/api/v1/direct_v2/threads/{thread_id}/items/"
     data = {
-        'recipient_users': f'[[{target_id}]]',
         'action': 'send_item',
-        'text': text
+        'text': text,
     }
     session.headers.update({ 'X-CSRFToken': session.cookies.get('csrftoken','') })
     return session.post(url, data=data)
 
 def upload_photo(session, photo_path):
     upload_id = str(int(time.time() * 1000))
-    url_upload = f"https://i.instagram.com/rupload_igphoto/{upload_id}/photo.jpg"
+    url_upload = f"https://i.instagram.com/rupload_igphoto/{upload_id}_0_0"
     with open(photo_path, 'rb') as f:
         photo_data = f.read()
     headers = {
-        "User-Agent": "Instagram 273.0.0.16.97 Android (30/11; 420dpi; 1080x1920; ...)",
+        "User-Agent": session.headers.get("User-Agent"),
         "X-Entity-Type": "image/jpeg",
         "Offset": "0",
         "X-Instagram-Rupload-Params": json.dumps({
@@ -93,36 +94,35 @@ def upload_photo(session, photo_path):
         "Content-Type": "application/octet-stream",
         "X-Entity-Name": f"{upload_id}_0_0_1080_1080",
         "X-Entity-Length": str(len(photo_data)),
-        "Accept-Encoding": "gzip",
-        "Connection": "keep-alive",
         "X-CSRFToken": session.cookies.get('csrftoken', ''),
-        "Cookie": f"csrftoken={session.cookies.get('csrftoken', '')}; sessionid={session.cookies.get('sessionid', '')}",
     }
     response = session.post(url_upload, headers=headers, data=photo_data)
-    if response.status_code == 200:
-        return upload_id
-    else:
-        print("Eroare la upload foto:", response.status_code, response.text)
-        return None
+    return upload_id if response.status_code == 200 else None
 
-def send_photo(session, target_id, photo_path):
+def send_photo(session, thread_id, photo_path):
     upload_id = upload_photo(session, photo_path)
     if not upload_id:
-        print("Nu s-a putut face upload la poza.")
+        print("Eroare upload foto.")
         return
-    url_send = "https://i.instagram.com/api/v1/direct_v2/threads/broadcast/media_share/?media_type=1"
+    url_send = f"https://i.instagram.com/api/v1/direct_v2/threads/{thread_id}/items/"
     data = {
-        "recipient_users": f"[[{target_id}]]",
         "action": "send_item",
-        "client_context": upload_id,
+        "item_type": "media_share",
+        "media_type": "photo",
         "upload_id": upload_id,
     }
     session.headers.update({ "X-CSRFToken": session.cookies.get('csrftoken','') })
-    response = session.post(url_send, data=data)
-    if response.status_code == 200:
-        print("Poza trimisă cu succes!")
-    else:
-        print("Eroare la trimiterea pozei:", response.status_code, response.text)
+    return session.post(url_send, data=data)
+
+def wait_for_connection():
+    while True:
+        try:
+            requests.get("https://www.google.com", timeout=3)
+            print("🔌 Conexiunea a revenit.")
+            break
+        except:
+            print("❌ Conexiunea a fost pierdută. Aștept reconectarea...")
+            time.sleep(5)
 
 def main():
     creds = load_creds()
@@ -143,15 +143,16 @@ def main():
     login_resp = login(session, username, password)
 
     if login_resp.get('two_factor_required'):
-        two_factor_identifier = login_resp['two_factor_info']['two_factor_identifier']
-        print("2FA este necesar. Introdu codul de verificare.")
-        login_resp = two_factor_login(session, username, two_factor_identifier)
+        tfa_id = login_resp['two_factor_info']['two_factor_identifier']
+        print("🔐 2FA necesar. Introdu codul.")
+        login_resp = two_factor_login(session, username, tfa_id)
 
     if login_resp.get('status') != 'ok':
-        print("Login failed:", login_resp)
+        print("❌ Login eșuat:", login_resp)
         return
 
-    print("Login successful!")
+    print("✅ Login successful!")
+
     print("Ce vrei sa trimiti? (mesaje spam/poze)")
     choice = input().strip().lower()
     if choice == 'mesaje spam':
@@ -165,7 +166,7 @@ def main():
         photo_path = input().strip()
         send_func = lambda tid, _: send_photo(session, tid, photo_path)
     else:
-        print("Optiune invalida.")
+        print("Opțiune invalidă.")
         return
 
     print("Unde vrei sa trimiti? (utilizatori/grupuri)")
@@ -175,63 +176,54 @@ def main():
         print("Introdu numele utilizatorilor cu virgule:")
         names = [u.strip() for u in input().split(',')]
         for u in names:
-            info = session.get(f"https://www.instagram.com/{u}/?__a=1").json()
             try:
-                targets.append(info['graphql']['user']['id'])
+                res = session.get(f"https://i.instagram.com/api/v1/users/web_profile_info/?username={u}")
+                user_id = res.json()['data']['user']['pk_id']
+                thread_id = start_thread(session, user_id)
+                targets.append(thread_id)
             except:
-                print(f"Nu s-a putut obtine id pentru {u}")
+                print(f"❌ Nu s-a putut obține ID pentru {u}")
     elif dest == 'grupuri':
         groups = list_groups(session)
         for i, g in enumerate(groups, 1):
             print(f"{i}. {g['name']}")
-        print("Selecteaza grupurile (numere, virgula):")
-        picks = [int(x.strip())-1 for x in input().split(',')]
+        print("Selectează grupurile (numere, separate cu virgulă):")
+        picks = [int(x.strip()) - 1 for x in input().split(',')]
         for idx in picks:
             targets.append(groups[idx]['id'])
     else:
-        print("Optiune invalida.")
+        print("Opțiune invalidă.")
         return
 
-    print("Introdu delayul in secunde intre mesaje:")
+    print("Introdu delayul între mesaje (în secunde):")
     delay = float(input().strip())
-    
-    print("Începem trimiterea mesajelor...")
 
-    idx_target = 0
-    idx_text = 0
-    total_targets = len(targets)
-    total_texts = len(texts) if choice == 'mesaje spam' else 1
-
+    print("🚀 Începem trimiterea...")
     while True:
-        try:
-            tid = targets[idx_target]
-            text = texts[idx_text] if choice == 'mesaje spam' else ''
-
-            resp = send_func(tid, text)
-            if resp is not None:
-                print(f"Trimis către {tid}: {resp.status_code}")
-
-            # incrementăm indexurile pentru următorul mesaj
-            idx_text += 1
-            if idx_text >= total_texts:
-                idx_text = 0
-                idx_target += 1
-                if idx_target >= total_targets:
-                    idx_target = 0
-
-            time.sleep(delay)
-
-        except requests.exceptions.ConnectionError:
-            print("Conexiunea a fost pierdută, aștept conexiunea la internet...")
-
-            # Loop de așteptare reconectare
-            while True:
+        for tid in targets:
+            for text in (texts if choice == 'mesaje spam' else ['']):
                 try:
-                    requests.get("https://www.google.com", timeout=5)
-                    print("Conexiunea a revenit, reluăm trimiterea de unde am rămas.")
-                    break
-                except requests.exceptions.RequestException:
-                    time.sleep(3)
+                    resp = send_func(tid, text)
+                    if resp is not None:
+                        print(f"✅ Trimis către {tid}: {resp.status_code}")
+                    time.sleep(delay)
+                except Exception as e:
+                    print("⚠️ Eroare la trimitere:", e)
+                    wait_for_connection()
+
+def start_thread(session, user_id):
+    url = "https://i.instagram.com/api/v1/direct_v2/create_group_thread/"
+    data = {
+        "recipient_users": json.dumps([[str(user_id)]]),
+        "client_context": str(int(time.time() * 1000)),
+        "action": "create_group"
+    }
+    session.headers.update({"X-CSRFToken": session.cookies.get('csrftoken', '')})
+    resp = session.post(url, data=data)
+    if resp.status_code == 200:
+        return resp.json()['thread_id']
+    else:
+        raise Exception("Eroare creare thread nou.")
 
 if __name__ == '__main__':
     main()
