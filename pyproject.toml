@@ -1,0 +1,11 @@
+[project]
+name = "instagram-bot"
+version = "0.1.0"
+description = "Instagram spam/poze bot cu 2FA și retry reconectare internet"
+authors = [
+  { name="Gyova Nyy", email="Borutovp191@gmail.com" }
+]
+requires-python = ">=3.8"
+
+[project.dependencies]
+requests = "*"
